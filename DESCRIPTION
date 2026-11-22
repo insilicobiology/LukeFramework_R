@@ -1,0 +1,33 @@
+Package: LukeFrameworkR
+Title: Epistemic Uncertainty Quantification for Tree-Based SHAP Explanations
+Version: 0.1.0
+Authors@R: 
+    person("Luke", "Developer", email = "contact@insilicobiology.org", role = c("aut", "cre"))
+Description: Quantifies epistemic uncertainty in SHAP feature attributions for tree
+    ensembles (randomForest, ranger, xgboost) using softmax tree weighting and
+    Dirichlet hypothesis sampling. Computes standard deviation, 95% credible
+    intervals, explanation entropy, and sign stability alongside ggplot2
+    visualizations tailored for biological research.
+URL: https://github.com/insilicobiology/LukeFramework_R
+BugReports: https://github.com/insilicobiology/LukeFramework_R/issues
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Imports:
+    dplyr,
+    ggplot2,
+    graphics,
+    patchwork,
+    rlang,
+    stats,
+    tidyr,
+    treeshap,
+    utils
+Suggests:
+    knitr,
+    randomForest,
+    ranger,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    xgboost
+Config/roxygen2/version: 8.1.1
