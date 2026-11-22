@@ -6,11 +6,14 @@
 \usage{
 plot_uncertainty_comparison(
   explanation,
+  top_n = 15L,
   title = "Uncertainty Metric Comparison"
 )
 }
 \arguments{
 \item{explanation}{An object of class \code{ubiq_explanation}.}
+
+\item{top_n}{Maximum number of top features to display (default: 15).}
 
 \item{title}{Overall figure title.}
 }

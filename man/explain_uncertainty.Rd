@@ -2,24 +2,24 @@
 % Please edit documentation in R/explainer.R
 \name{explain_uncertainty}
 \alias{explain_uncertainty}
-\title{Compute SHAP Values with Epistemic Uncertainty}
+\title{Compute SHAP Values with Epistemic Uncertainty for One Sample}
 \usage{
 explain_uncertainty(explainer, x, n_samples = 500, alpha = 1, class_idx = 1L)
 }
 \arguments{
-\item{explainer}{An object of class \code{ubiq_explainer}.}
+\item{explainer}{An object created by \code{\link[=ubiq_explainer]{ubiq_explainer()}}.}
 
-\item{x}{A single-row \code{data.frame} representing the instance to explain.}
+\item{x}{A single-row \code{data.frame} representing one patient or biological sample.}
 
 \item{n_samples}{Number of Dirichlet hypothesis samples (default: 500).}
 
-\item{alpha}{Dirichlet concentration parameter (default: 1.0).}
+\item{alpha}{Dirichlet concentration parameter (default: 1.0; smaller values focus on top-performing trees).}
 
-\item{class_idx}{Integer index of the class to explain for multi-class models (default: 1).}
+\item{class_idx}{Integer index or character name of the target class to explain (default: 1).}
 }
 \value{
 An object of class \code{ubiq_explanation}.
 }
 \description{
-Compute SHAP Values with Epistemic Uncertainty
+Compute SHAP Values with Epistemic Uncertainty for One Sample
 }

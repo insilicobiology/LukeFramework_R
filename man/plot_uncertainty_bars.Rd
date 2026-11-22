@@ -4,10 +4,16 @@
 \alias{plot_uncertainty_bars}
 \title{Plot SHAP Values with Epistemic Uncertainty Bars & Violins}
 \usage{
-plot_uncertainty_bars(explanation, title = "SHAP with Epistemic Uncertainty")
+plot_uncertainty_bars(
+  explanation,
+  top_n = 15L,
+  title = "SHAP with Epistemic Uncertainty"
+)
 }
 \arguments{
 \item{explanation}{An object of class \code{ubiq_explanation}.}
+
+\item{top_n}{Maximum number of top features (by absolute mean SHAP) to display (default: 15).}
 
 \item{title}{Optional plot title.}
 }

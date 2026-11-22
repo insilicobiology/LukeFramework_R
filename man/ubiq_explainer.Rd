@@ -9,17 +9,18 @@ ubiq_explainer(model, X_train, y_train, beta = 5, seed = NULL)
 \arguments{
 \item{model}{A trained tree ensemble (\code{ranger}, \code{randomForest}, or \code{xgb.Booster}).}
 
-\item{X_train}{Training feature \code{data.frame} or \code{matrix}.}
+\item{X_train}{Training feature \code{data.frame} or \code{matrix} (predictors only, without the target column).}
 
 \item{y_train}{Training target vector (factor/character for classification, numeric for regression).}
 
-\item{beta}{Temperature parameter for softmax tree weighting (default: 5.0).}
+\item{beta}{Softmax temperature parameter for weighting trees by training accuracy (default: 5.0).}
 
-\item{seed}{Optional integer random seed.}
+\item{seed}{Optional integer random seed for reproducible results.}
 }
 \value{
 An object of class \code{ubiq_explainer}.
 }
 \description{
-Initialize a UBiQTree Epistemic SHAP Explainer
+Prepares a trained tree ensemble (\code{ranger}, \code{randomForest}, or \code{xgb.Booster})
+to quantify epistemic uncertainty in SHAP feature attributions.
 }

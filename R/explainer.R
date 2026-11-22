@@ -1,20 +1,37 @@
 #' Initialize a UBiQTree Epistemic SHAP Explainer
 #'
+#' Prepares a trained tree ensemble (`ranger`, `randomForest`, or `xgb.Booster`)
+#' to quantify epistemic uncertainty in SHAP feature attributions.
+#'
 #' @param model A trained tree ensemble (`ranger`, `randomForest`, or `xgb.Booster`).
-#' @param X_train Training feature `data.frame` or `matrix`.
+#' @param X_train Training feature `data.frame` or `matrix` (predictors only, without the target column).
 #' @param y_train Training target vector (factor/character for classification, numeric for regression).
-#' @param beta Temperature parameter for softmax tree weighting (default: 5.0).
-#' @param seed Optional integer random seed.
+#' @param beta Softmax temperature parameter for weighting trees by training accuracy (default: 5.0).
+#' @param seed Optional integer random seed for reproducible results.
 #'
 #' @return An object of class `ubiq_explainer`.
 #' @export
 ubiq_explainer <- function(model, X_train, y_train, beta = 5.0, seed = NULL) {
+  if (missing(model) || missing(X_train) || missing(y_train)) {
+    stop("Please provide `model`, `X_train` (features only), and `y_train` (outcome vector).", call. = FALSE)
+  }
+
   X_df <- as.data.frame(X_train)
+  if (nrow(X_df) != length(y_train)) {
+    stop(sprintf(
+      "`X_train` has %d rows, but `y_train` has %d values. Please ensure they match.",
+      nrow(X_df), length(y_train)
+    ), call. = FALSE)
+  }
+
+  if (inherits(model, "ranger") && is.null(model$forest)) {
+    stop("Your `ranger` model was trained without saving trees. Please re-train with `write.forest = TRUE` (the default).", call. = FALSE)
+  }
+
   is_classif <- is.factor(y_train) || is.character(y_train)
   task <- if (is_classif) "classification" else "regression"
   classes <- if (is_classif) levels(as.factor(y_train)) else NULL
 
-  # Native multi-class unification for ranger (treeshap::unify only supports <= 2 classes for ranger)
   if (inherits(model, "ranger") && is_classif && length(classes) > 2L) {
     unified <- unify_ranger_multiclass(model, X_df, classes)
   } else {
@@ -48,10 +65,21 @@ ubiq_explainer <- function(model, X_train, y_train, beta = 5.0, seed = NULL) {
   )
 }
 
+#' @export
+print.ubiq_explainer <- function(x, ...) {
+  cat("UBiQTree Epistemic SHAP Explainer\n")
+  cat("  Task:     ", x$task, "\n", sep = "")
+  if (!is.null(x$classes)) {
+    cat("  Classes:  ", paste(paste0(seq_along(x$classes), "=", x$classes), collapse = ", "), "\n", sep = "")
+  }
+  cat("  Trees:    ", x$n_trees, "\n", sep = "")
+  cat("  Features: ", length(x$feature_names), "\n", sep = "")
+  invisible(x)
+}
+
 #' @keywords internal
 unify_ranger_multiclass <- function(model, X_df, classes) {
   n_trees <- model$num.trees
-  # Compute node cover per tree by routing X_df down each tree
   tree_infos <- lapply(seq_len(n_trees), function(t_idx) {
     ti <- ranger::treeInfo(model, tree = t_idx)
     ti$Tree <- t_idx - 1L
@@ -64,7 +92,6 @@ unify_ranger_multiclass <- function(model, X_df, classes) {
     ti
   })
 
-  # Build one unified model table per class
   unified_list <- lapply(seq_along(classes), function(c_idx) {
     pred_col <- paste0("pred.", classes[c_idx])
     if (!pred_col %in% names(tree_infos[[1]])) {
@@ -198,21 +225,42 @@ single_tree_shap <- function(tree_df, x_row, feature_names) {
   phi
 }
 
-#' Compute SHAP Values with Epistemic Uncertainty
+#' Compute SHAP Values with Epistemic Uncertainty for One Sample
 #'
-#' @param explainer An object of class `ubiq_explainer`.
-#' @param x A single-row `data.frame` representing the instance to explain.
+#' @param explainer An object created by [ubiq_explainer()].
+#' @param x A single-row `data.frame` representing one patient or biological sample.
 #' @param n_samples Number of Dirichlet hypothesis samples (default: 500).
-#' @param alpha Dirichlet concentration parameter (default: 1.0).
-#' @param class_idx Integer index of the class to explain for multi-class models (default: 1).
+#' @param alpha Dirichlet concentration parameter (default: 1.0; smaller values focus on top-performing trees).
+#' @param class_idx Integer index or character name of the target class to explain (default: 1).
 #'
 #' @return An object of class `ubiq_explanation`.
 #' @export
 explain_uncertainty <- function(explainer, x, n_samples = 500, alpha = 1.0, class_idx = 1L) {
-  stopifnot(inherits(explainer, "ubiq_explainer"))
+  if (!inherits(explainer, "ubiq_explainer")) {
+    stop("`explainer` must be created using `ubiq_explainer()`.", call. = FALSE)
+  }
   if (!is.null(explainer$seed)) set.seed(explainer$seed)
 
-  x_df <- as.data.frame(x)[1, , drop = FALSE]
+  x_df <- as.data.frame(x)
+  if (nrow(x_df) > 1L) {
+    warning("`x` has multiple rows; explaining the first row only.", call. = FALSE)
+  }
+  x_df <- x_df[1, , drop = FALSE]
+
+  missing_cols <- setdiff(explainer$feature_names, colnames(x_df))
+  if (length(missing_cols) > 0L) {
+    stop("Missing feature columns in `x`: ", paste(missing_cols, collapse = ", "), call. = FALSE)
+  }
+  x_df <- x_df[, explainer$feature_names, drop = FALSE]
+
+  # Allow character class name in addition to integer index
+  if (is.character(class_idx)) {
+    if (is.null(explainer$classes) || !class_idx %in% explainer$classes) {
+      stop("Unknown class name. Available classes: ", paste(explainer$classes, collapse = ", "), call. = FALSE)
+    }
+    class_idx <- match(class_idx, explainer$classes)
+  }
+
   n_trees <- explainer$n_trees
   n_features <- length(explainer$feature_names)
 
@@ -246,6 +294,11 @@ explain_uncertainty <- function(explainer, x, n_samples = 500, alpha = 1.0, clas
   entropy_vals <- compute_entropy(phi_dist)
   sign_stab <- compute_sign_stability(phi_dist, mean_shap)
 
+  status <- ifelse(
+    sign_stab < 0.70, "Unstable Direction",
+    ifelse(sign_stab < 0.90 | std_shap > 0.15, "Review Recommended", "Reliable")
+  )
+
   summary_df <- data.frame(
     feature = explainer$feature_names,
     mean = mean_shap,
@@ -254,6 +307,7 @@ explain_uncertainty <- function(explainer, x, n_samples = 500, alpha = 1.0, clas
     ci_high = ci_95[2, ],
     entropy = entropy_vals,
     sign_stability = sign_stab,
+    status = status,
     row.names = NULL
   )
 
@@ -266,6 +320,25 @@ explain_uncertainty <- function(explainer, x, n_samples = 500, alpha = 1.0, clas
     ),
     class = "ubiq_explanation"
   )
+}
+
+#' @export
+print.ubiq_explanation <- function(x, top_n = 10L, ...) {
+  cat("UBiQTree Epistemic SHAP Explanation")
+  if (!is.null(x$class_name)) cat(" (Class: ", x$class_name, ")", sep = "")
+  cat("\n\n")
+
+  ord <- order(-abs(x$summary$mean))
+  df <- utils::head(x$summary[ord, , drop = FALSE], top_n)
+  df$mean <- round(df$mean, 3)
+  df$std <- round(df$std, 3)
+  df$ci_low <- round(df$ci_low, 3)
+  df$ci_high <- round(df$ci_high, 3)
+  df$entropy <- round(df$entropy, 3)
+  df$sign_stability <- sprintf("%.1f%%", df$sign_stability * 100)
+
+  print(df, row.names = FALSE)
+  invisible(x)
 }
 
 #' @keywords internal

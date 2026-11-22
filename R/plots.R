@@ -1,21 +1,26 @@
 #' Plot SHAP Values with Epistemic Uncertainty Bars & Violins
 #'
 #' @param explanation An object of class `ubiq_explanation`.
+#' @param top_n Maximum number of top features (by absolute mean SHAP) to display (default: 15).
 #' @param title Optional plot title.
 #' @return A `ggplot` object.
 #' @export
-plot_uncertainty_bars <- function(explanation, title = "SHAP with Epistemic Uncertainty") {
+plot_uncertainty_bars <- function(explanation, top_n = 15L, title = "SHAP with Epistemic Uncertainty") {
   if (!is.null(explanation$class_name)) {
     title <- paste0(title, " - Class: ", explanation$class_name)
   }
 
-  df <- explanation$summary |>
+  ord <- order(-abs(explanation$summary$mean))
+  keep_feats <- utils::head(explanation$summary$feature[ord], top_n)
+  sub_summary <- explanation$summary[explanation$summary$feature %in% keep_feats, , drop = FALSE]
+
+  df <- sub_summary |>
     dplyr::mutate(
       abs_mean = abs(.data$mean),
       feature = stats::reorder(.data$feature, .data$mean)
     )
 
-  samples_long <- as.data.frame(explanation$samples) |>
+  samples_long <- as.data.frame(explanation$samples[, keep_feats, drop = FALSE]) |>
     tidyr::pivot_longer(cols = dplyr::everything(), names_to = "feature", values_to = "shap") |>
     dplyr::mutate(feature = factor(.data$feature, levels = levels(df$feature)))
 
@@ -42,6 +47,11 @@ plot_uncertainty_bars <- function(explanation, title = "SHAP with Epistemic Unce
     ggplot2::theme_minimal(base_size = 13)
 }
 
+#' @export
+plot.ubiq_explanation <- function(x, top_n = 15L, ...) {
+  plot_uncertainty_bars(x, top_n = top_n, ...)
+}
+
 #' Plot Kernel Density Estimate for a Single Feature
 #'
 #' @param explanation An object of class `ubiq_explanation`.
@@ -55,6 +65,10 @@ plot_uncertainty_distribution <- function(explanation, feature, title = "SHAP Va
   }
 
   feat_name <- if (is.numeric(feature)) explanation$summary$feature[feature] else feature
+  if (!feat_name %in% explanation$summary$feature) {
+    stop("Feature '", feat_name, "' not found in explanation.", call. = FALSE)
+  }
+
   row <- explanation$summary[explanation$summary$feature == feat_name, ]
   vals <- data.frame(shap = explanation$samples[, feat_name])
 
@@ -88,15 +102,20 @@ plot_uncertainty_distribution <- function(explanation, feature, title = "SHAP Va
 #' Plot 3-Panel Uncertainty Metric Comparison (Std, Entropy, Sign Stability)
 #'
 #' @param explanation An object of class `ubiq_explanation`.
+#' @param top_n Maximum number of top features to display (default: 15).
 #' @param title Overall figure title.
 #' @return A `patchwork` plot object.
 #' @export
-plot_uncertainty_comparison <- function(explanation, title = "Uncertainty Metric Comparison") {
+plot_uncertainty_comparison <- function(explanation, top_n = 15L, title = "Uncertainty Metric Comparison") {
   if (!is.null(explanation$class_name)) {
     title <- paste0(title, " - Class: ", explanation$class_name)
   }
 
-  df <- explanation$summary |>
+  ord <- order(-abs(explanation$summary$mean))
+  keep_feats <- utils::head(explanation$summary$feature[ord], top_n)
+  sub_summary <- explanation$summary[explanation$summary$feature %in% keep_feats, , drop = FALSE]
+
+  df <- sub_summary |>
     dplyr::mutate(feature = stats::reorder(.data$feature, .data$mean))
 
   p1 <- ggplot2::ggplot(df, ggplot2::aes(x = .data$std, y = .data$feature, fill = .data$feature)) +
