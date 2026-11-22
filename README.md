@@ -120,22 +120,18 @@ plot_uncertainty_distribution(explanation, feature = "Biomarker_A")
 plot_uncertainty_comparison(explanation)
 ```
 
----
-
 ## How to interpret the output
 
 `print(explanation)` and `explanation$summary` contain the following columns:
 
 | Column | Plain-language meaning | What to look for |
 | :--- | :--- | :--- |
-| `mean` | Average SHAP push on the model's prediction (the predicted probability for classification, the predicted value for regression). | Positive values push *toward* the target class (or a higher value); negative values push *away* from it. |
-| `std` | Standard deviation across the re-weighted model versions. | Smaller means the model versions agree more. |
-| `ci_low` / `ci_high` | 95% credible interval (error bar around `mean`). | If the interval crosses `0`, the direction of effect is uncertain. |
-| `sign_stability` | Percentage of model versions that agree on the direction (+ or −). | Above 90% is consistent; near 50% is a coin flip. |
+| `mean` | Average SHAP push on the model's prediction (predicted probability for classification, or predicted value for regression). | Positive values push *toward* the target class (or higher value); negative values push *away* from it. |
+| `std` | Standard deviation across the re-weighted model versions. | Smaller values mean the model versions agree more. |
+| `ci_low`, `ci_high` | Lower and upper bounds of the 95% credible interval (error bar around `mean`). | If the interval crosses `0`, the direction of effect is uncertain. |
+| `sign_stability` | Percentage of model versions that agree on the direction (`+` or `-`). | Above 90% is consistent; near 50% is a coin flip. |
 | `entropy` | How spread out the SHAP distribution is. | Lower entropy means a sharper, more concentrated signal. |
 | `status` | Automatic triage flag: `Reliable`, `Review Recommended`, or `Unstable Direction`. | Prioritize `Reliable` features; treat `Unstable Direction` with caution. |
-
----
 
 ## Key functions and parameters
 
