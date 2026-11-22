@@ -1,29 +1,31 @@
 ---
-title: "How Much Can We Trust a Machine-Learning Explanation?"
-subtitle: "A plain-language guide to uncertainty in SHAP biomarker explanations (LukeFrameworkR / UBiQTree)"
+title: "From Model to Trustworthy Explanation: the UBiQTree Pipeline Step by Step"
+subtitle: "A hands-on guide for biologists and clinical researchers (LukeFrameworkR)"
 date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
-  html_document:
-    toc: true
-    toc_depth: 2
-    theme: flatly
-  word_document:
-    toc: true
-    toc_depth: 2
-    fig_width: 8.5
-    fig_height: 5.5
   pdf_document:
     toc: true
     toc_depth: 2
     fig_width: 7.5
     fig_height: 5.0
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: flatly
+    code_folding: show
+  word_document:
+    toc: true
+    toc_depth: 2
+    fig_width: 8.5
+    fig_height: 5.5
 vignette: >
-  %\VignetteIndexEntry{How Much Can We Trust a Machine-Learning Explanation?}
+  %\VignetteIndexEntry{UBiQTree pipeline step by step}
   %\VignetteEncoding{UTF-8}
   %\VignetteEngine{knitr::rmarkdown}
 ---
 
 ```{r setup, include=FALSE}
+# Code is hidden by default. Chunks the researcher needs are marked echo = TRUE.
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, dpi = 300)
 
 if (!requireNamespace("LukeFrameworkR", quietly = TRUE)) {
@@ -40,30 +42,24 @@ library(knitr)
 
 > **The problem.** A machine-learning model can tell you *which measurements pushed a patient's prediction up or down*. The usual tool for this (SHAP) gives **one number per measurement**, with no error bar. Without an error bar, a measurement that is just noise can look as important as a real biological driver.
 >
-> **What this guide shows.** `LukeFrameworkR` adds the missing error bar. It asks: *"If we had trusted a slightly different, equally plausible version of the model, would the explanation change?"* Where the answer is "a lot", the explanation should not be trusted at face value.
+> **What the method adds.** UBiQTree (Dubey et al.) re-weights the trees of a Random Forest many times and recomputes SHAP each time. If the explanation barely changes, it is trustworthy. If it changes a lot, it should not be taken at face value.
 >
-> **How we test it.** We use a simulated hospital cohort in which **we know the true drivers in advance**, and we include a measurement that is pure noise. A trustworthy method should not be fooled by the noise.
+> **How we test it here.** A simulated cohort where **the true drivers are known**, plus a variable that is pure noise. A trustworthy method should not be fooled by the noise.
 >
-> **What to take away.** Read an explanation in this order: (1) *Which direction* does the feature push, and do the alternative models agree? (2) *How large* is the push, and how wide is its error range? (3) *Does the pattern hold across several patients?*
+> **How to read this document.** Code that you would reuse in your own project is **shown**. Code that only builds the example data or formats tables is **hidden**. Each step says what you put in and what you get out.
 
 ### Key terms in plain language
 
 ```{r glossary}
 glossary <- data.frame(
-  Term = c(
-    "Random forest",
-    "SHAP value",
-    "Epistemic uncertainty",
-    "95% credible interval",
-    "Entropy (of an explanation)",
-    "Sign stability",
-    "Negative control"
-  ),
+  Term = c("Random forest", "SHAP value", "Epistemic uncertainty",
+           "95% credible interval", "Entropy (of an explanation)",
+           "Sign stability", "Negative control"),
   `What it means` = c(
     "A model made of many decision trees, each trained on a slightly different resample of the patients; their votes are pooled.",
     "How much one measurement moved this patient's predicted probability up (+) or down (-), compared with an average patient.",
     "Uncertainty caused by limited or noisy data, which more data could in principle reduce. Here it is measured as how much the explanation changes between plausible re-weightings of the trees.",
-    "The range that contains the middle 95% of the SHAP values obtained across the 500 re-weighted tree sets. Read it like an error bar on the explanation.",
+    "The range containing the middle 95% of the SHAP values obtained across the re-weighted tree sets. Read it like an error bar on the explanation.",
     "How spread out the SHAP values are. Higher means the explanation is less concentrated on one value.",
     "The percentage of re-weighted tree sets that agree on the direction of the effect (increase vs. decrease).",
     "A variable known to have no effect, included to check that the method does not report one."
@@ -84,38 +80,85 @@ kable(glossary, caption = "Glossary of terms used in this guide.")
 
 ---
 
-## 1. Why Uncertainty Matters for SHAP Explanations
+## 1. The Pipeline at a Glance
 
-Biologists and clinicians increasingly use models such as Random Forests to find key biomarkers or clinical predictors. To open the "black box", they often use **SHAP (Shapley Additive Explanations)** to answer:
+Whatever the dataset (ICU stays, a cancer registry, prescriptions), the workflow has the same eight steps. The rest of this document walks through them in order.
 
-*"Which features drove this patient's prediction, and by how much?"*
+```{r pipeline-table}
+pipeline <- data.frame(
+  Step = 1:8,
+  `What you do` = c(
+    "Prepare data and split into training and test sets",
+    "Train a Random Forest that outputs class probabilities",
+    "Build the explainer from the model and the training data",
+    "Choose which patients to explain",
+    "Draw many alternative tree weightings and recompute SHAP",
+    "Summarise and flag each feature",
+    "Plot the uncertainty",
+    "Repeat across many patients and aggregate"
+  ),
+  `Function used` = c(
+    "base R", "ranger(..., probability = TRUE)", "ubiq_explainer()",
+    "your own rule (here: most ambiguous patient)", "explain_uncertainty()",
+    "flag_features() (helper in Appendix A)",
+    "plot_uncertainty_bars(), plot_uncertainty_distribution(), plot_uncertainty_comparison()",
+    "a loop over explain_uncertainty()"
+  ),
+  `What you get` = c(
+    "train/test tables", "a fitted forest", "an explainer object",
+    "one or more rows of predictors", "SHAP distribution and summary per feature",
+    "a table with a plain-language reading", "figures",
+    "how often each feature gives a reliable explanation"
+  ),
+  check.names = FALSE
+)
+kable(pipeline, caption = "The eight-step pipeline.")
+```
 
-Standard SHAP returns a **single number** per feature. That is a problem in real studies, where patient cohorts are small, noisy and heterogeneous. Different groups of trees in the same forest can disagree about how important a feature is. If we report only one number, **an unstable or noisy variable can look as important as a true biological driver.**
+### What happens inside Steps 3 and 5
 
-`LukeFrameworkR` follows the **UBiQTree** framework (Dubey et al., *Patterns* 2026). In everyday terms:
+This summary is based on the preprint of the method (Dubey et al., arXiv:2508.09639, the version of the *Patterns* paper; see References). Please check the details against the published paper and the package documentation, because I could not open the journal page directly.
 
-1. A Random Forest is treated as a panel of competing "hypotheses" (the individual trees).
-2. The trees are **re-weighted at random many times** (500 times here), giving more weight to trees that predict well. Each re-weighting is one alternative, plausible version of the model. (Technically, the weights are drawn from a Dirichlet distribution.)
-3. SHAP is recomputed for every alternative version. If the explanation barely changes, we can trust it more. If it changes a lot, we should be cautious.
+1. **Tree weights.** Each tree gets a weight reflecting how well it predicts, using out-of-bag (OOB) performance, meaning patients the tree did not see during training.
+2. **Hypothesis sampling.** Random weight sets are drawn from a Dirichlet distribution. Each draw is one alternative, plausible version of the model (a "hypothesis"). Here, 500 draws.
+3. **Recompute SHAP.** TreeSHAP is calculated for the patient under each weighted ensemble.
+4. **Decompose the uncertainty.** The paper splits the variance of a SHAP value into an *aleatoric* part (variation across trees inside one weighted sample), an *epistemic* part (variation of the sample means), and an *entanglement* term (their covariance). It also uses Dempster-Shafer evidence theory to describe belief and plausibility over SHAP intervals.
+5. **Report.** Mean, spread, 95% interval, entropy and sign stability per feature.
 
-For every feature this yields four numbers:
+The summary table in this vignette exposes mean, standard deviation (epistemic spread), 95% interval, entropy and sign stability. Whether your installed version also returns the aleatoric and entanglement components is something you can check directly:
 
-| Output | Plain-language question it answers |
-|:--|:--|
-| **Mean SHAP** | On average, how strongly does this feature push the prediction, and in which direction? |
-| **Epistemic Std and 95% interval** | How much does that push change between plausible versions of the model? |
-| **Entropy** | Is the explanation concentrated on one value, or spread out? |
-| **Sign stability** | What share of model versions agree that the feature pushes *up* (or *down*)? |
+```{r inspect-object-note, echo=FALSE, results='asis'}
+cat("The chunk in Step 5 prints the names of everything the result object contains.\n")
+```
 
 ---
 
-## 2. The Dataset and the Prediction Task
+## 2. Settings (the Knobs You Control)
 
-### 2.1 A simulated cohort where the truth is known
+Put every setting in one place so that the analysis is reproducible and easy to report. The values below are those used in the original vignette.
 
-We simulate a hospital **length-of-stay (LOS)** cohort of 600 patients, loosely modelled on the MIMIC-III intensive-care setting used by Dubey et al. (2026). **No real patient data are used.** Because we wrote the simulation, we know exactly which variables affect the outcome, which almost never happens with real data. This lets us check whether the explanations point to the right variables.
+```{r settings, echo=TRUE}
+cfg <- list(
+  seed            = 42,    # reproducibility
+  n_trees         = 100,   # trees in the Random Forest
+  train_fraction  = 0.70,  # share of patients used for training
+  n_samples       = 500,   # alternative tree weightings per patient (single patient)
+  alpha           = 0.5,   # Dirichlet setting (see ?explain_uncertainty)
+  beta            = 5.0,   # weighting setting (see ?ubiq_explainer)
+  n_patients      = 20,    # patients explained in Step 8
+  n_samples_multi = 200    # tree weightings per patient in Step 8 (smaller = faster)
+)
+```
 
-There are 10 variables. **Only four of them influence the outcome.** The other six are decoys:
+> **Tip.** `alpha` and `beta` control how the tree weights are drawn and how strongly accurate trees are favoured. Their exact meaning is in the package help pages (`?explain_uncertainty`, `?ubiq_explainer`). Report them, and test how sensitive your conclusions are to them.
+
+---
+
+## 3. The Example Data (Simulated)
+
+We simulate a hospital **length-of-stay (LOS)** cohort of 600 patients, loosely modelled on the MIMIC-III setting used in the paper. **No real patient data are used.** Because we wrote the simulation, we know which variables matter, which almost never happens with real data.
+
+**Only four of the ten variables influence the outcome.** The other six are decoys:
 
 ```{r feature-info}
 feature_info <- data.frame(
@@ -137,27 +180,19 @@ feature_info <- data.frame(
   role = c(rep("True driver", 4), rep("Decoy (no effect)", 5), "Negative control (noise)"),
   stringsAsFactors = FALSE
 )
-
 kable(
   setNames(feature_info, c("Variable", "What it measures", "Role in this simulation")),
   caption = "Table 0: The 10 variables. Only the four 'True driver' variables influence length of stay."
 )
 ```
 
-> **Why this matters for interpretation.** Five of the decoys (`NumProcs`, `Age`, `NumLabs`, `AdmitProcedure`, `TotalNumInteract`) look like realistic clinical variables but have **no effect** in the simulation. `NoiseBiomarker` is pure random noise. In a real study you would not know which variables belong in which group, which is why an error bar on the explanation is useful.
+> **Why this matters.** Five decoys (`NumProcs`, `Age`, `NumLabs`, `AdmitProcedure`, `TotalNumInteract`) look like realistic clinical variables but have **no effect** in the simulation, and `NoiseBiomarker` is pure noise. In a real study you would not know which variables belong in which group, which is why an error bar on the explanation is useful.
 
-### 2.2 What the model predicts
+The model predicts one of three stay categories: **Short_Stay** (roughly under 3 days), **Medium_Stay** (roughly 3 to 7 days, the hardest to call) and **Long_Stay** (roughly 7 days or more). *Technical note:* in the code the groups come from cutting a hidden continuous "severity score" at fixed thresholds, so the day ranges describe the clinical analogy.
 
-We train a **Random Forest classifier** (100 trees) on a randomly chosen 70% of patients and test it on the remaining 30% that the model has never seen. For each patient it predicts one of three stay categories:
-
-* **Short_Stay** (roughly under 3 days)
-* **Medium_Stay** (roughly 3 to 7 days), the hardest group to call because it sits between the other two
-* **Long_Stay** (roughly 7 days or more)
-
-> *Technical note:* in the code the groups are created by cutting a hidden continuous "severity score" at fixed thresholds. The day ranges above describe the clinical analogy and are not computed directly from days.
-
-```{r simulate-and-train}
-set.seed(42)
+```{r simulate-data}
+# Hidden: builds the example data frame `df` (predictors + factor outcome LOS_Group)
+set.seed(cfg$seed)
 n <- 600
 
 df <- data.frame(
@@ -173,7 +208,6 @@ df <- data.frame(
   NoiseBiomarker   = rnorm(n)
 )
 
-# True clinical signal (4 variables) + biological/measurement noise
 latent_los <- 1.4  * df$NumTransfers +
               0.15 * df$NumNotes +
               0.9  * df$NumCallouts +
@@ -185,99 +219,177 @@ df$LOS_Group <- cut(
   breaks = c(-Inf, 5.2, 8.8, Inf),
   labels = c("Short_Stay", "Medium_Stay", "Long_Stay")
 )
+```
 
-# Stratified 70:30 train/test split
-train_idx <- unlist(lapply(split(seq_len(n), df$LOS_Group), function(idx) {
-  sample(idx, size = floor(0.7 * length(idx)))
+---
+
+## 4. Steps 1 to 3: Prepare, Train, Build the Explainer
+
+### Step 1. Prepare the data
+
+**You provide:** a table with one row per patient, numeric/factor predictors and one categorical outcome column. **You get:** a training and a test set with the same class balance. The split is stratified so that each stay category is represented in both.
+
+```{r step1-split, echo=TRUE}
+outcome      <- "LOS_Group"
+feature_cols <- setdiff(names(df), outcome)
+
+set.seed(cfg$seed)
+train_idx <- unlist(lapply(split(seq_len(nrow(df)), df[[outcome]]), function(idx) {
+  sample(idx, size = floor(cfg$train_fraction * length(idx)))
 }))
 train_df <- df[train_idx, ]
 test_df  <- df[-train_idx, ]
+```
 
+### Step 2. Train a Random Forest that outputs probabilities
+
+**Important:** `probability = TRUE` makes the forest return a probability for each class, which the explanation method needs.
+
+```{r step2-train, echo=TRUE}
 rf_los <- ranger(
-  LOS_Group ~ .,
+  formula     = as.formula(paste(outcome, "~ .")),
   data        = train_df,
-  num.trees   = 100,
+  num.trees   = cfg$n_trees,
   probability = TRUE,
-  seed        = 42
+  seed        = cfg$seed
 )
 
-pred_probs <- predict(rf_los, data = test_df[, -ncol(test_df)])$predictions
+pred_probs <- predict(rf_los, data = test_df[, feature_cols])$predictions
 pred_class <- colnames(pred_probs)[max.col(pred_probs)]
-test_acc   <- mean(pred_class == test_df$LOS_Group) * 100
+test_acc   <- mean(pred_class == test_df[[outcome]]) * 100
+```
+
+```{r model-summary}
 ```
 
 * **Training cohort:** `r nrow(train_df)` patients | **Test cohort:** `r nrow(test_df)` patients
 * **Model:** Random Forest (`r rf_los$num.trees` trees) | **Overall test accuracy:** `r sprintf("%.1f%%", test_acc)`
 
-Accuracy alone hides *where* the model makes mistakes. The table below shows, for each true stay category (rows), what the model predicted (columns). Correct predictions are on the diagonal.
+Accuracy alone hides *where* the model makes mistakes. The table shows, for each true stay category (rows), what the model predicted (columns). Correct predictions are on the diagonal.
 
 ```{r confusion}
 conf <- table(
-  `True stay` = test_df$LOS_Group,
-  `Predicted stay` = factor(pred_class, levels = levels(test_df$LOS_Group))
+  `True stay` = test_df[[outcome]],
+  `Predicted stay` = factor(pred_class, levels = levels(test_df[[outcome]]))
 )
 kable(as.data.frame.matrix(conf), caption = "Table 0b: Test-set predictions vs. true stay category (patient counts).")
 ```
 
----
+### Step 3. Build the explainer
 
-## 3. Explaining One Borderline Patient
+**You provide:** the fitted model and the *training* predictors and outcome (used to judge how well each tree performs). **You get:** an explainer object that you reuse for every patient.
 
-Predictions are riskiest for **borderline patients**, whose measurements sit near the boundary between two categories. From the test set we pick the `Medium_Stay` patient whose predicted probabilities are the most evenly split across the three categories (the highest prediction entropy). We then ask the method to explain why the model gave this patient its `Medium_Stay` probability, using 500 re-weighted tree sets (Dirichlet settings: alpha = 0.5, beta = 5.0).
-
-```{r ubiq-explain}
+```{r step3-explainer, echo=TRUE}
 explainer <- ubiq_explainer(
   model   = rf_los,
-  X_train = train_df[, -ncol(train_df)],
-  y_train = train_df$LOS_Group,
-  beta    = 5.0,
-  seed    = 42
+  X_train = train_df[, feature_cols],
+  y_train = train_df[[outcome]],
+  beta    = cfg$beta,
+  seed    = cfg$seed
 )
+```
 
+---
+
+## 5. Steps 4 to 6: Choose a Patient, Explain, Flag
+
+### Step 4. Choose which patient to explain
+
+Explanations are riskiest for **borderline patients**. Here we take the `Medium_Stay` patient whose predicted probabilities are the most evenly split across the three categories (highest prediction entropy). In your own work you can instead select a patient of interest by row number.
+
+```{r step4-select, echo=TRUE}
 pred_entropy  <- -rowSums(pred_probs * log(pmax(pred_probs, 1e-12)))
-medium_rows   <- which(test_df$LOS_Group == "Medium_Stay")
+medium_rows   <- which(test_df[[outcome]] == "Medium_Stay")
 ambiguous_idx <- medium_rows[which.max(pred_entropy[medium_rows])]
-patient_x     <- test_df[ambiguous_idx, -ncol(test_df), drop = FALSE]
 
+patient_x <- test_df[ambiguous_idx, feature_cols, drop = FALSE]   # ONE row, predictors only
+```
+
+### Step 5. Explain with uncertainty
+
+**You provide:** the explainer, one patient (one row, predictors only) and the class you want explained. **You get:** the SHAP value of every feature under each of the alternative tree weightings, plus a summary table.
+
+```{r step5-explain, echo=TRUE}
 res_medium <- explain_uncertainty(
   explainer = explainer,
   x         = patient_x,
-  n_samples = 500,
-  alpha     = 0.5,
-  class_idx = "Medium_Stay"
+  n_samples = cfg$n_samples,
+  alpha     = cfg$alpha,
+  class_idx = "Medium_Stay"       # the class whose probability we explain
 )
 
-smry <- res_medium$summary
-has_stab <- "sign_stability" %in% names(smry)
-crosses_zero <- smry$ci_low < 0 & smry$ci_high > 0
+names(res_medium)            # what the result object contains
+names(res_medium$summary)    # columns of the per-feature summary table
+```
 
-# Plain-language reading (heuristic thresholds that match the lines in Figure 3)
-smry$reading <- if (has_stab) {
-  ifelse(!crosses_zero & smry$sign_stability >= 0.9, "Consistent direction",
-  ifelse(smry$sign_stability >= 0.7, "Probable, verify", "Unstable, do not rely on"))
-} else {
-  ifelse(crosses_zero, "Range includes 0: direction unclear", "Range excludes 0")
+### Step 6. Summarise and flag each feature
+
+The summary table has one row per feature. We add a plain-language reading using our helper `flag_features()` (full code in Appendix A). A feature is called *consistent* if at least 90% of the alternative models agree on its direction **and** its 95% range does not cross zero. Between 70% and 90% it is *probable*, and below 70% it is *unstable*. These cut-offs are rules of thumb that match the lines in Figure 3, not formal statistical tests.
+
+```{r helpers}
+# ---- Helper functions used in Steps 6 and 8 (shown in Appendix A) ----
+
+# Adds a plain-language reading to the summary table returned by explain_uncertainty()
+flag_features <- function(smry, stab_hi = 0.9, stab_mid = 0.7) {
+  smry$crosses_zero <- smry$ci_low < 0 & smry$ci_high > 0
+  if ("sign_stability" %in% names(smry)) {
+    smry$reading <- ifelse(
+      !smry$crosses_zero & smry$sign_stability >= stab_hi, "Consistent direction",
+      ifelse(smry$sign_stability >= stab_mid, "Probable, verify", "Unstable, do not rely on")
+    )
+  } else {
+    smry$reading <- ifelse(smry$crosses_zero,
+                           "Range includes 0: direction unclear", "Range excludes 0")
+  }
+  smry
 }
-smry$truth <- feature_info$role[match(smry$feature, feature_info$feature)]
 
-summary_ordered <- smry[order(-abs(smry$mean)), ]
-top3_feats <- summary_ordered$feature[1:3]
+# Importance-vs-uncertainty scatter ("entanglement" plot), returns plot and correlations
+plot_entanglement <- function(res, top_feats) {
+  d <- res$summary
+  d$abs_mean <- abs(d$mean)
+  d$is_top3  <- ifelse(d$feature %in% top_feats, "Top 3 features", "Other features")
+  rho    <- cor(d$abs_mean, d$std, method = "pearson")
+  rho_sp <- cor(d$abs_mean, d$std, method = "spearman")
+  p <- ggplot(d, aes(x = abs_mean, y = std, color = is_top3)) +
+    geom_point(size = 3.5) +
+    geom_text(data = subset(d, is_top3 == "Top 3 features"), aes(label = feature),
+              nudge_y = 0.04 * diff(range(d$std)), check_overlap = TRUE,
+              size = 3.8, show.legend = FALSE) +
+    annotate("label", x = -Inf, y = Inf, hjust = -0.1, vjust = 1.3, size = 4,
+             label = sprintf("Pearson r = %.2f\nSpearman rho = %.2f", rho, rho_sp)) +
+    scale_color_manual(values = c("Top 3 features" = "firebrick", "Other features" = "steelblue")) +
+    labs(title = "Larger average effects vs. larger disagreement",
+         x = "Size of average effect (absolute mean SHAP)",
+         y = "Disagreement between model versions (SD of SHAP)", color = NULL) +
+    theme_minimal(base_size = 12)
+  list(plot = p, rho = rho, rho_sp = rho_sp)
+}
+```
 
-# Table for display
-summary_display <- summary_ordered
+```{r step6-flag, echo=TRUE}
+smry         <- flag_features(res_medium$summary)
+smry_ordered <- smry[order(-abs(smry$mean)), ]     # largest average push first
+top3_feats   <- smry_ordered$feature[1:3]
+```
+
+```{r table1}
+# Hidden: formats Table 1 for reading
+has_stab <- "sign_stability" %in% names(smry)
+smry_ordered$truth <- feature_info$role[match(smry_ordered$feature, feature_info$feature)]
+
+summary_display <- smry_ordered
 num_cols <- intersect(c("mean", "std", "ci_low", "ci_high", "entropy"), names(summary_display))
 summary_display[num_cols] <- lapply(summary_display[num_cols], round, 3)
 if (has_stab) {
   summary_display$sign_stability <- sprintf("%.0f%%", summary_display$sign_stability * 100)
 }
-
 col_order <- intersect(
   c("feature", "truth", "mean", "std", "ci_low", "ci_high",
     "entropy", "sign_stability", "status", "reading"),
   names(summary_display)
 )
 summary_display <- summary_display[, col_order, drop = FALSE]
-
 nice <- c(feature = "Feature", truth = "True role (simulation)",
           mean = "Average push (Mean SHAP)", std = "Disagreement (Epistemic Std)",
           ci_low = "95% range: low", ci_high = "95% range: high",
@@ -285,44 +397,40 @@ nice <- c(feature = "Feature", truth = "True role (simulation)",
           status = "Package flag", reading = "Our plain-language reading")
 names(summary_display) <- ifelse(names(summary_display) %in% names(nice),
                                  nice[names(summary_display)], names(summary_display))
-
 kable(
-  summary_display,
-  row.names = FALSE,
+  summary_display, row.names = FALSE,
   caption = "Table 1: Feature explanations and their uncertainty for one borderline Medium_Stay patient, sorted from largest to smallest average push."
 )
 ```
 
 ### How to read Table 1
 
-* **Average push (Mean SHAP):** the size and direction of the feature's push on this patient's `Medium_Stay` probability. Positive = pushes toward Medium_Stay, negative = pushes away.
-* **Disagreement and 95% range:** how much that push changes between the 500 alternative model versions. A range that crosses 0 means the model versions do not even agree on the direction.
-* **Direction agreement:** the share of model versions that agree on up vs. down. Treat values near 100% as consistent and values near 50% as a coin flip.
-* **Our plain-language reading:** a quick triage label based on direction agreement and whether the range crosses 0 (at least 90% and no zero-crossing = consistent, 70% to 90% = probable, below 70% = unstable). These cut-offs are rules of thumb, not formal statistical tests.
-* **True role:** known only because this is a simulation. In real data this column would not exist.
+* **Average push (Mean SHAP):** size and direction of the feature's push on this patient's `Medium_Stay` probability. Positive = pushes toward Medium_Stay, negative = pushes away.
+* **Disagreement and 95% range:** how much that push changes between the alternative model versions. A range that crosses 0 means the versions do not even agree on the direction.
+* **Direction agreement:** the share of model versions that agree on up vs. down. Near 100% is consistent, near 50% is a coin flip.
+* **Our plain-language reading:** a quick triage label (see Step 6).
+* **True role:** known only because this is a simulation.
 
 ```{r interpretation-values, include=FALSE}
 drivers <- feature_info$feature[feature_info$role == "True driver"]
 get1 <- function(f, col) smry[[col]][smry$feature == f]
 
-noise_rank <- match("NoiseBiomarker", summary_ordered$feature)
-noise_mean <- get1("NoiseBiomarker", "mean")
-noise_lo   <- get1("NoiseBiomarker", "ci_low")
-noise_hi   <- get1("NoiseBiomarker", "ci_high")
-noise_sd   <- get1("NoiseBiomarker", "std")
+noise_rank   <- match("NoiseBiomarker", smry_ordered$feature)
+noise_mean   <- get1("NoiseBiomarker", "mean")
+noise_lo     <- get1("NoiseBiomarker", "ci_low")
+noise_hi     <- get1("NoiseBiomarker", "ci_high")
+noise_sd     <- get1("NoiseBiomarker", "std")
 noise_cross0 <- noise_lo < 0 & noise_hi > 0
-noise_stab <- if (has_stab) get1("NoiseBiomarker", "sign_stability") else NA_real_
 
 msg_noise_rank <- if (noise_rank <= 3) {
   sprintf("In this run it ranks **#%d of 10** by size of average push, so a plain SHAP bar chart would present it as one of the leading drivers, even though it has no real effect.", noise_rank)
 } else {
   sprintf("In this run it ranks **#%d of 10** by size of average push, i.e. it is not among the top drivers here.", noise_rank)
 }
-
 msg_noise_unc <- if (noise_cross0) {
-  sprintf("Its 95%% range runs from %.2f to %.2f and **crosses zero**, so the model versions do not agree on whether it raises or lowers the probability. That is the pattern we want to see for a variable with no effect.", noise_lo, noise_hi)
+  sprintf("Its 95%% range runs from %.2f to %.2f and **crosses zero**, so the model versions do not agree on whether it raises or lowers the probability. That is the pattern we want for a variable with no effect.", noise_lo, noise_hi)
 } else {
-  sprintf("Its 95%% range (%.2f to %.2f) does **not** cross zero in this run. This is a useful reminder that uncertainty flags for a single patient are not a perfect noise detector (see Section 5).", noise_lo, noise_hi)
+  sprintf("Its 95%% range (%.2f to %.2f) does **not** cross zero in this run. This is a reminder that the flags for a single patient are not a perfect noise detector, which is why Step 8 repeats the analysis across many patients.", noise_lo, noise_hi)
 }
 
 drv <- smry[smry$feature %in% drivers, ]
@@ -338,37 +446,31 @@ msg_drivers <- sprintf(
 
 ### What does Table 1 tell us?
 
-1. **Check the negative control first.** `NoiseBiomarker` has no true effect, so it is the "vehicle control" of this experiment. Its average push is `r sprintf("%.3f", noise_mean)` and its disagreement (Epistemic Std) is `r sprintf("%.3f", noise_sd)`. `r msg_noise_rank` `r msg_noise_unc`
+1. **Check the negative control first.** `NoiseBiomarker` has no true effect, so it is the "vehicle control" of this experiment. Its average push is `r sprintf("%.3f", noise_mean)` and its disagreement is `r sprintf("%.3f", noise_sd)`. `r msg_noise_rank` `r msg_noise_unc`
 
 2. **Compare with the true drivers.** `r msg_drivers` Large disagreement for a true driver is not surprising in a borderline patient: near the boundary between two categories, different trees are likely to disagree about how much each feature matters.
 
-3. **Look at direction before size.** A feature whose direction is stable but whose size varies is still telling you something useful (it matters, but its exact strength is imprecise). A feature whose direction flips between model versions should not be used to justify a conclusion.
+3. **Look at direction before size.** A feature whose direction is stable but whose size varies still tells you something useful. A feature whose direction flips between model versions should not be used to justify a conclusion.
 
 ---
 
-## 4. Visual Uncertainty Diagnostics
+## 6. Step 7: Visual Uncertainty Diagnostics
 
-### 4.1 Overview: average push with error ranges
+Each plot below needs only the result object `res_medium` from Step 5.
 
-**Figure 1** shows one bar per feature. The bar is the average SHAP push. The shaded blue shape (a "violin") shows how the SHAP values are spread across the 500 model versions, and the dashed error bar marks the 95% range.
+### 7a. Overview: average push with error ranges
 
-**What to look for:** a *narrow* violin means the model versions agree. A *wide* violin means they disagree. A bar whose error range straddles zero means the direction itself is uncertain.
+Each bar is the average SHAP push. The shaded blue shape (a "violin") shows how the SHAP values are spread across the alternative models, and the dashed error bar marks the 95% range. **Look for:** narrow violins (agreement), wide violins (disagreement), and bars whose error range straddles zero (direction uncertain).
 
-```{r fig-summary, fig.height=5.5, fig.width=8.5}
+```{r step7a-bars, echo=TRUE, fig.height=5.5, fig.width=8.5}
 plot_uncertainty_bars(res_medium, title = "Average SHAP push per feature, with uncertainty")
 ```
 
-### 4.2 Zooming in on the top three features
+### 7b. Zooming in on the top three features
 
-**Figure 2** shows the full distribution of SHAP values for the three features with the largest average push.
+Red dashed line = average SHAP. Blue shaded area = 95% range. Dotted black line at 0 separates "decreases the probability" (left) from "increases the probability" (right). **Look for:** a distribution entirely on one side of 0 (reliable direction) vs. one that straddles it.
 
-* **Red dashed line:** the average SHAP value.
-* **Blue shaded area:** the 95% range.
-* **Dotted black line at 0:** the dividing line between "decreases the probability" (left) and "increases the probability" (right).
-
-**What to look for:** if the whole distribution sits on one side of the dotted line, the direction is reliable. If the distribution straddles the line, the direction is uncertain.
-
-```{r fig-top3-kde, fig.height=4.5, fig.width=11}
+```{r step7b-kde, echo=TRUE, fig.height=4.5, fig.width=11}
 kde_plots <- lapply(top3_feats, function(f) {
   plot_uncertainty_distribution(res_medium, feature = f, title = "Posterior SHAP") +
     ggplot2::theme(plot.title = ggplot2::element_text(size = 11))
@@ -376,56 +478,30 @@ kde_plots <- lapply(top3_feats, function(f) {
 wrap_plots(kde_plots, ncol = 3)
 ```
 
-### 4.3 Three complementary reliability checks
+### 7c. Three complementary reliability checks
 
-**Figure 3** shows three ways of asking "how reliable is this explanation?" for every feature:
+* **Standard deviation (top):** spread of SHAP across model versions. Smaller is better.
+* **Entropy (middle):** how flat or smeared-out the distribution is. Smaller means more concentrated.
+* **Direction agreement, i.e. sign stability (bottom):** features beyond the green dashed line (above 90%) are consistent. Features below the orange line (70%) or red line (40%) change direction between model versions and should not be relied upon.
 
-* **Standard deviation (top):** how widely the SHAP values spread across model versions. Smaller is better.
-* **Entropy (middle):** how flat or smeared-out the distribution is. Smaller means the explanation is more concentrated.
-* **Direction agreement, i.e. sign stability (bottom):** the share of model versions that agree on up vs. down. Features beyond the green dashed line (above 90%) are consistent. Features below the orange line (70%) or red line (40%) change direction between model versions and should not be relied upon.
-
-```{r fig-metrics, fig.height=8, fig.width=8}
+```{r step7c-comparison, echo=TRUE, fig.height=8, fig.width=8}
 plot_uncertainty_comparison(res_medium)
 ```
 
-### 4.4 Are the most important features also the most uncertain?
+### 7d. Are the most important features also the most uncertain?
 
-Dubey et al. (2026) describe a pattern they call **entanglement**: the features with the largest average effect tend also to show the largest disagreement between model versions. **Figure 4** tests this for our patient. Each dot is a feature. The horizontal axis is how large its average push is, and the vertical axis is how much that push varies between model versions.
+The paper describes **entanglement**: model-based and data-based sources of variation are statistically linked, and in tree ensembles features with large average effects tend to show larger variance in their SHAP values. This plot checks the practical side of that idea for our patient.
 
-```{r fig-entanglement, fig.height=5, fig.width=7.5}
-ent_df <- res_medium$summary
-ent_df$abs_mean <- abs(ent_df$mean)
-ent_df$is_top3  <- ifelse(ent_df$feature %in% top3_feats, "Top 3 features", "Other features")
-rho    <- cor(ent_df$abs_mean, ent_df$std, method = "pearson")
-rho_sp <- cor(ent_df$abs_mean, ent_df$std, method = "spearman")
-
-ggplot(ent_df, aes(x = abs_mean, y = std, color = is_top3)) +
-  geom_point(size = 3.5) +
-  geom_text(
-    data = subset(ent_df, is_top3 == "Top 3 features"),
-    aes(label = feature),
-    nudge_y = 0.04 * diff(range(ent_df$std)),
-    check_overlap = TRUE, size = 3.8, show.legend = FALSE
-  ) +
-  annotate(
-    "label", x = -Inf, y = Inf,
-    label = sprintf("Pearson r = %.2f\nSpearman rho = %.2f", rho, rho_sp),
-    hjust = -0.1, vjust = 1.3, size = 4
-  ) +
-  scale_color_manual(values = c("Top 3 features" = "firebrick", "Other features" = "steelblue")) +
-  labs(
-    title = "Larger average effects vs. larger disagreement (Medium_Stay patient)",
-    x = "Size of average effect (absolute mean SHAP)",
-    y = "Disagreement between model versions (SD of SHAP)",
-    color = NULL
-  ) +
-  theme_minimal(base_size = 12)
+```{r step7d-entanglement, echo=TRUE, fig.height=5, fig.width=7.5}
+ent <- plot_entanglement(res_medium, top3_feats)
+ent$plot
 ```
 
 ```{r entanglement-text, include=FALSE}
+rho <- ent$rho; rho_sp <- ent$rho_sp
 strength <- if (abs(rho_sp) < 0.3) "weak" else if (abs(rho_sp) < 0.6) "moderate" else "strong"
 msg_entangle <- if (rho_sp >= 0.3) {
-  sprintf("For this patient there is a **%s positive relationship** (Pearson r = %.2f, Spearman rho = %.2f): features with larger average effects also tend to show larger disagreement between model versions. In other words, the features that dominate the explanation are often the ones whose exact size is least certain.", strength, rho, rho_sp)
+  sprintf("For this patient there is a **%s positive relationship** (Pearson r = %.2f, Spearman rho = %.2f): features with larger average effects also tend to show larger disagreement between model versions.", strength, rho, rho_sp)
 } else {
   sprintf("For this patient the relationship is **%s** (Pearson r = %.2f, Spearman rho = %.2f), so we do not see clear entanglement here.", strength, rho, rho_sp)
 }
@@ -433,31 +509,158 @@ msg_entangle <- if (rho_sp >= 0.3) {
 
 `r msg_entangle`
 
-> **Caution when interpreting Figure 4.** (i) There are only 10 points, so the correlation is descriptive and not a formal test. (ii) A larger effect will often have a larger absolute spread simply because of scale, so part of this pattern may reflect magnitude and not "true" extra uncertainty. A relative measure (SD divided by the absolute mean) would be a sensible follow-up. (iii) This is one patient; it should be repeated across many.
+> **Caution.** (i) There are only 10 points, so the correlation is descriptive and not a formal test. (ii) A larger effect often has a larger absolute spread simply because of scale; a relative measure (SD divided by absolute mean) would be a sensible follow-up. (iii) This is one patient.
 
 ---
 
-## 5. Practical Takeaways for Biological and Clinical Workflows
+## 7. Step 8: Repeat Across Many Patients
+
+One patient is an anecdote. To judge whether the method separates real drivers from decoys, explain many patients and ask, **for each feature, how often does it receive a reliable explanation?** We explain the class the model predicted for each patient. With the settings in Section 2 this step runs 20 patients with 200 tree weightings each. Lower `n_patients` or `n_samples_multi` if it is too slow.
+
+```{r step8-loop, echo=TRUE}
+set.seed(cfg$seed)
+idx <- sample(seq_len(nrow(test_df)), cfg$n_patients)
+
+multi <- lapply(idx, function(i) {
+  r <- explain_uncertainty(
+    explainer = explainer,
+    x         = test_df[i, feature_cols, drop = FALSE],
+    n_samples = cfg$n_samples_multi,
+    alpha     = cfg$alpha,
+    class_idx = pred_class[i]          # explain the class the model predicted
+  )
+  out <- flag_features(r$summary)
+  out$patient <- i
+  out
+})
+multi_df <- do.call(rbind, multi)
+
+# Per feature: typical push, typical disagreement, share of patients with a reliable explanation
+reliable <- c("Consistent direction", "Range excludes 0")
+agg <- do.call(rbind, lapply(split(multi_df, multi_df$feature), function(d) {
+  data.frame(
+    feature         = d$feature[1],
+    median_abs_push = median(abs(d$mean)),
+    median_sd       = median(d$std),
+    pct_consistent  = 100 * mean(d$reading %in% reliable)
+  )
+}))
+agg <- agg[order(-agg$pct_consistent), ]
+```
+
+```{r step8-table}
+agg_display <- agg
+agg_display$truth <- feature_info$role[match(agg_display$feature, feature_info$feature)]
+agg_display <- agg_display[, c("feature", "truth", "median_abs_push", "median_sd", "pct_consistent")]
+agg_display[c("median_abs_push", "median_sd")] <- lapply(agg_display[c("median_abs_push", "median_sd")], round, 3)
+agg_display$pct_consistent <- sprintf("%.0f%%", agg_display$pct_consistent)
+names(agg_display) <- c("Feature", "True role (simulation)", "Typical push (median |SHAP|)",
+                        "Typical disagreement (median SD)", "Patients with a consistent direction")
+kable(agg_display, row.names = FALSE,
+      caption = sprintf("Table 2: Reliability of each feature across %d test patients.", cfg$n_patients))
+```
+
+```{r step8-plot, echo=TRUE, fig.height=4.5, fig.width=7.5}
+agg$truth <- feature_info$role[match(agg$feature, feature_info$feature)]
+ggplot(agg, aes(x = reorder(feature, pct_consistent), y = pct_consistent, fill = truth)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "How often does each feature get a reliable explanation?",
+       x = NULL, y = "% of patients with a consistent direction", fill = NULL) +
+  theme_minimal(base_size = 12)
+```
+
+**How to read Table 2 and the bar chart.** If the method works, the four true drivers should be reliable for most patients and the decoys and the noise variable for few. If decoys or noise are often "consistent", the flags alone are not enough to separate signal from noise in your setting, and you should be more conservative. The numbers depend on the random seed and on the number of patients, so use a larger `n_patients` for any conclusion you want to report.
+
+---
+
+## 8. Practical Takeaways
 
 **Do**
 
-1. **Always report an error range next to a SHAP value,** especially for borderline samples. Check the 95% range, direction agreement and flag before choosing a biomarker for wet-lab validation or a clinical rule.
-2. **Look at direction first, size second.** An effect that flips direction between model versions is not a finding.
-3. **Include a negative control** (a shuffled or random variable) in your own analyses. If it ranks high or looks stable, your explanation pipeline is less trustworthy than it appears.
-4. **Repeat across patients.** Each explanation covers one patient. Check several typical patients from each group before drawing conclusions about the whole population.
-5. **Use high uncertainty as a prompt for follow-up.** Large disagreement for a feature may indicate that the data around that patient type are sparse or the measurement is imprecise. More samples or a better assay for that variable are reasonable things to try. (This is a plausible reading, not a guarantee.)
+1. **Report an error range next to every SHAP value,** especially for borderline patients.
+2. **Look at direction first, size second.** An effect that flips between model versions is not a finding.
+3. **Include a negative control** (a shuffled or random variable) in your own analyses. If it ranks high or looks stable, your pipeline is less trustworthy than it seems.
+4. **Repeat across patients** (Step 8) before drawing conclusions about the population.
+5. **Treat high uncertainty as a prompt for follow-up.** It may mean the data around that patient type are sparse or the measurement is imprecise. The paper's authors conclude that reducing epistemic uncertainty requires better data quality and model development; more samples or a better assay are plausible first steps.
 
 **Do not**
 
-* **Do not treat an explanation as biology.** SHAP describes *what the model relies on*, not *what causes the outcome*. A reliable explanation of a model can still reflect correlation or bias in the data.
-* **Do not treat the flags as a statistical test.** The thresholds (90%, 70%, 40%) are rules of thumb. As the negative control above shows, a single patient's explanation can look stable by chance. Confirm with several patients and, where possible, independent data.
+* **Do not treat an explanation as biology.** SHAP describes *what the model relies on*, not *what causes the outcome*.
+* **Do not treat the flags as a statistical test.** The 90%, 70% and 40% thresholds are rules of thumb.
 
 ### Limitations of this demonstration
 
-* The data are **simulated** and simpler than real clinical data. Real variables are correlated, which makes explanations harder to separate.
-* The "uncertainty" here describes variation **between re-weighted trees of one model** and does not cover every source of uncertainty (for example, sampling variation in the patients themselves or measurement error).
-* Results depend on the random seed and on the settings (number of samples, alpha, beta). Re-run with other seeds before drawing conclusions.
+* The data are simulated and simpler than real clinical data. Real variables are correlated, which makes explanations harder to separate.
+* The uncertainty here is variation between re-weighted trees of one model. It does not cover every source of uncertainty (for example sampling variation in the patients, or measurement error).
+* Results depend on the seed and on `n_samples`, `alpha` and `beta`. Re-run with other values before concluding.
 
-### Reference
+### Reporting checklist
 
-Dubey et al. (2026), *Patterns*. UBiQTree framework, as cited in the original version of this vignette.
+* Model type, number of trees, train/test split and seed.
+* Test performance overall and per class (confusion matrix).
+* UBiQTree settings: `n_samples`, `alpha`, `beta`, which class was explained.
+* Which patients were explained and how they were chosen.
+* The 95% range and direction agreement next to every reported SHAP value.
+* A negative-control variable and its result (Step 8).
+
+---
+
+## 9. Using the Pipeline on Your Own Data
+
+The template below repeats Steps 1 to 6 for your own table. It is **not run** here and is **untested**, so adapt column names and check each step against the package help. If your data are real patient records, treat patient-level explanations as sensitive information and handle them under your project's data-protection rules.
+
+```{r own-data-template, echo=TRUE, eval=FALSE}
+run_ubiq_pipeline <- function(data, outcome, patient_rows = NULL,
+                              n_trees = 100, train_fraction = 0.7,
+                              n_samples = 500, alpha = 0.5, beta = 5.0, seed = 42) {
+  stopifnot(is.factor(data[[outcome]]))
+  feature_cols <- setdiff(names(data), outcome)
+
+  # Step 1: stratified split
+  set.seed(seed)
+  tr <- unlist(lapply(split(seq_len(nrow(data)), data[[outcome]]), function(i)
+    sample(i, floor(train_fraction * length(i)))))
+  train <- data[tr, ]; test <- data[-tr, ]
+
+  # Step 2: forest with class probabilities
+  rf <- ranger(as.formula(paste(outcome, "~ .")), data = train,
+               num.trees = n_trees, probability = TRUE, seed = seed)
+  probs <- predict(rf, data = test[, feature_cols])$predictions
+  pred  <- colnames(probs)[max.col(probs)]
+
+  # Step 3: explainer
+  expl <- ubiq_explainer(rf, X_train = train[, feature_cols],
+                         y_train = train[[outcome]], beta = beta, seed = seed)
+
+  # Steps 4-6: explain chosen patients (default: 5 random test patients)
+  if (is.null(patient_rows)) patient_rows <- sample(seq_len(nrow(test)), 5)
+  out <- lapply(patient_rows, function(i) {
+    r <- explain_uncertainty(expl, x = test[i, feature_cols, drop = FALSE],
+                             n_samples = n_samples, alpha = alpha,
+                             class_idx = pred[i])
+    list(patient = i, class = pred[i], result = r, flags = flag_features(r$summary))
+  })
+  list(model = rf, explainer = expl, test = test, predictions = pred, explanations = out)
+}
+
+# Example:
+# my_data <- readRDS("my_cohort.rds")        # one row per patient
+# my_data$outcome <- factor(my_data$outcome)
+# fit <- run_ubiq_pipeline(my_data, outcome = "outcome")
+# plot_uncertainty_bars(fit$explanations[[1]]$result)
+```
+
+---
+
+## Appendix A. Helper Code Used in This Guide
+
+These are our own small functions (not part of the package). They are defined above and repeated here for reference.
+
+```{r show-helpers, ref.label="helpers", echo=TRUE, eval=FALSE}
+```
+
+## References
+
+* Dubey A, Anžel A, İlgen B, Hattab G. UbiQTree: Uncertainty quantification in XAI with tree ensembles. *Patterns* (2026). DOI: 10.1016/j.patter.2025.101454. Preprint: arXiv:2508.09639. The authors state that code to reproduce their experiments is at https://github.com/dubeyakshat07/UBiQTree.
+* Method details in Section 1 follow the arXiv version (v2, February 2026). The settings `alpha = 0.5` and `beta = 5.0` are those of the original vignette; I have not verified them against the paper's experimental details.
