@@ -18,15 +18,14 @@ Imports:
     ggplot2,
     graphics,
     patchwork,
+    ranger,
     rlang,
     stats,
     tidyr,
-    treeshap,
-    utils
+    treeshap
 Suggests:
     knitr,
     randomForest,
-    ranger,
     rmarkdown,
     testthat (>= 3.0.0),
     xgboost
